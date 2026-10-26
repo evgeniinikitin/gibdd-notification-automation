@@ -1,0 +1,114 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-buscript}
+      POSTGRES_USER: ${POSTGRES_USER:-buscript}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-buscript} -d ${POSTGRES_DB:-buscript}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis_data:/data
+
+  api:
+    build:
+      context: ./apps/api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-buscript}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-buscript}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /data/storage
+    ports:
+      - "8000:8000"
+    volumes:
+      - storage_data:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./apps/api
+    command: celery -A app.worker.celery_app worker --loglevel=INFO
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-buscript}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-buscript}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /data/storage
+    volumes:
+      - storage_data:/data/storage
+    depends_on:
+      api:
+        condition: service_started
+
+  scheduler:
+    build:
+      context: ./apps/api
+    command: celery -A app.worker.celery_app beat --loglevel=INFO
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-buscript}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-buscript}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /data/storage
+    volumes:
+      - storage_data:/data/storage
+    depends_on:
+      api:
+        condition: service_started
+
+  browser-worker:
+    build:
+      context: ./apps/api
+    command: celery -A app.worker.celery_app worker --loglevel=INFO --queues=browser --concurrency=1
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-buscript}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-buscript}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /data/storage
+      GIBDD_LIVE_SUBMISSION: ${GIBDD_LIVE_SUBMISSION:-false}
+      GIBDD_HEADFUL: ${GIBDD_HEADFUL:-false}
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: "xn--80aebkobnwfcnsfk1e0h.xn--p1ai,.xn--p1ai,localhost,127.0.0.1,postgres,redis,api"
+    volumes:
+      - storage_data:/data/storage
+    depends_on:
+      api:
+        condition: service_started
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        API_INTERNAL_URL: http://api:8000
+    env_file: .env
+    environment:
+      HOSTNAME: 0.0.0.0
+      API_INTERNAL_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: ""
+    ports:
+      - "3100:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:
+  storage_data:
