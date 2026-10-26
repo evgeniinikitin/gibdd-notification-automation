@@ -1,30 +1,25 @@
-# Архитектура и решения
+# Implementation notes
 
-## Почему появилась платформа
+## From files to trip records
 
-Первая версия решала практическую задачу пакетами: Python собирал документ, JSON payload хранил значения формы, Playwright заполнял портал, оператор проходил финальное подтверждение и забирал квитанцию. Такой подход работал для локального процесса, но зависел от файловых путей и ручного состояния браузера. Buscript переносит данные и задания в отдельные сервисы.
+The original workflow moved data between a request, a DOCX file, a JSON payload, and an open browser tab. Buscript gives each trip a persistent record and a server-generated reference. The first substantive message or attachment creates a draft; later steps update that same trip instead of relying on a folder name or a browser tab as the source of truth.
 
-## Границы системы
+The web client is in [`apps/web`](../apps/web/). The API and workers are in [`apps/api`](../apps/api/). PostgreSQL stores trips, users, companies, and job state. Redis carries task IDs for Celery; uploaded documents remain in tenant-scoped storage.
 
-- **Next.js** показывает заявки, диалоги, профиль компании, транспорт, водителей, файлы и статусы. Интерфейс получает данные от API и не подставляет «демо» записи в пустые списки.
-- **FastAPI** проверяет пользователя и принадлежность объектов компании. Черновик создаётся при первом содержательном запросе; постоянный номер поездки формируется сервером.
-- **Extraction** читает текст и вложения, возвращает структурированные поля и вопросы по пропускам. Выход провайдера проверяется схемой и бизнес-правилами. Ключи остаются в переменных окружения.
-- **Document service** меняет OOXML шаблона, строит таблицы переменной длины, добавляет подпись из профиля компании, проверяет оставшиеся плейсхолдеры и конвертирует PDF.
-- **Celery + Redis** выполняют извлечение, генерацию и браузерные операции вне HTTP запроса. В очередь передаётся ID задания, сами документы читаются из хранилища в границах компании.
-- **Browser worker** заполняет многошаговую форму и сохраняет артефакты. Без явного разрешения на живую отправку он останавливается до необратимого действия.
+## Intake and validation
 
-## Контрольные точки
+[`workflow.py`](../apps/api/app/automation/workflow.py) coordinates the conversation around a trip. [`extraction.py`](../apps/api/app/automation/extraction.py) defines the structured response expected from a model. The response is parsed into typed fields, checked against business rules, and sent back for clarification when required information is missing or approximate.
 
-1. Неполные или приблизительные сведения уточняются до формирования заявки.
-2. Профиль перевозчика принадлежит компании; данные из клиентского вложения не подменяют его автоматически.
-3. Сформированные документы отделены от исходных вложений в архиве.
-4. Результат браузера и квитанция привязаны к заданию; ошибки можно разбирать по состоянию и артефактам.
-5. Между LLM и порталом стоит детерминированная валидация.
+The LLM is useful for reading inconsistent inputs, especially attachments. It does not decide whether the portal's final submit button may be pressed. Carrier details come from the authenticated company's profile, not from an untrusted customer attachment.
 
-## Исторические модули
+## Documents
 
-`legacy/build_notification_xml.py` показывает низкоуровневую работу с DOCX как ZIP/OOXML и построение таблиц. `legacy/gibdd_autofill_node.js` показывает адаптер формы Playwright. `legacy/gibdd_autofill_chrome_batch.js` показывает последовательную обработку через существующую CDP сессию. В этой копии удалены встроенные клиентские данные; для исполнения нужен собственный payload и окружение.
+[`documents.py`](../apps/api/app/automation/documents.py) edits DOCX as an OOXML package. It rebuilds variable-length tables for children, companions, buses, and drivers, replaces route text and other placeholders, adds the current company's signature assets, checks for unresolved markers, and converts the result to PDF.
 
-## Границы кейса
+[`demo_template.py`](../apps/api/app/demo_template.py) builds the template used by the local demo at startup.
 
-Публичный код демонстрирует архитектуру и реализацию. Репозиторий не содержит рабочих клиентских данных, действующих ключей, подтверждений подачи или гарантий доступности внешнего сайта. Локальный `mock` режим служит для UI smoke test и не используется в production.
+## Portal worker and safe mode
+
+[`submission.py`](../apps/api/app/automation/submission.py) contains the Playwright adapter for the multi-step portal. [`orchestration.py`](../apps/api/app/automation/orchestration.py) connects validation, document generation, quota reservation, and the browser job. Browser evidence is stored with the trip rather than mixed into the ordinary file archive.
+
+The default `GIBDD_LIVE_SUBMISSION=false` stops before the final portal action and returns the dry-run reservation. Enabling live submission requires a separate operational decision and an environment that can reach the portal.
