@@ -1,72 +1,51 @@
-# Buscript · автоматизация уведомлений об организованной перевозке детей
+# Buscript: automating child transportation notifications
 
-**Портфельный кейс:** от разрозненных скриптов подготовки документов и заполнения портала ГИБДД к многопользовательскому приложению с проверяемым процессом подачи.
+I built this project around a recurring filing task: preparing notifications for organized bus trips with children and entering them into the Russian traffic police (GIBDD) portal.
 
-> Репозиторий содержит обезличенную копию кода. Все примеры синтетические; реальные заявки, данные детей и родителей, контакты клиентов, ключи, токены и результаты подачи не публикуются.
+A single trip can involve a customer, a carrier, several buses and drivers, a list of children and accompanying adults, route details, and supporting documents. The information often arrives as messages, scans, spreadsheets, and previous forms. Re-entering it by hand in both a DOCX notification and a multi-step web form is slow and easy to get wrong.
 
-## Задача
+## How I started
 
-Одно уведомление собирает сведения о заказчике, перевозчике, автобусах, водителях, детях, сопровождающих и маршруте. Ручной перенос этих данных между запросом клиента, документом и веб-формой отнимает время и повышает риск расхождений. Я построил процесс, в котором данные проходят через типизированную модель, проверку, генерацию документов и контролируемое заполнение портала.
+My first solution was a set of local scripts. Python assembled the notification document from structured rows. A JSON payload held the values needed by the portal. Playwright filled the form, including repeated bus and driver sections, and stopped at the final confirmation so a person could review the result. A batch runner reused an existing browser session to process several payloads in sequence.
 
-## Что реализовано
+That reduced repetitive entry, but it also exposed the limits of a file-based workflow. Each batch needed its own inputs and paths. The browser session carried operational state. It was difficult to see, in one place, which trip was incomplete, which document had been generated, and what happened during submission.
 
-| Слой | Логика |
-| --- | --- |
-| Подготовка | Из текста и вложений создаётся черновик поездки; недостающие сведения возвращаются на уточнение. |
-| Проверка | Правила валидируют состав поездки, маршрут, транспорт и обязательные поля до подачи. |
-| Документы | Из шаблона формируются DOCX и PDF; подпись и печать берутся из профиля конкретной компании. |
-| Подача | Browser worker заполняет портал, сохраняет доказательства и в безопасном режиме останавливается до финальной отправки. |
-| Контроль | Фоновые задания, статусы, архив файлов, аудит и разграничение данных между компаниями. |
+The first version is in [`legacy/`](legacy/README.md), including the OOXML document builder and Playwright form adapter.
 
-```mermaid
-flowchart LR
-    A[Запрос и вложения] --> B[Извлечение и уточнение]
-    B --> C[Типизированный черновик]
-    C --> D[Проверка правил]
-    D --> E[DOCX и PDF]
-    E --> F[Очередь заданий]
-    F --> G[Браузерный worker]
-    G --> H[Подтверждение и артефакты]
-    H --> I[Квитанция и архив]
-```
+## What I built next
 
-## Два поколения кода
+Buscript is the application I started building once the scripts needed shared state and a way to track each trip:
 
-- **`legacy/`** — обезличенные модули исходной автоматизации: сборка DOCX через OOXML, заполнение многошаговой формы Playwright и последовательная обработка JSON payload через CDP. Финальная отправка в batch остаётся ручным действием.
-- **`apps/`** — Buscript: Next.js интерфейс, FastAPI, PostgreSQL, Redis/Celery, browser worker, генерация документов и тесты. Данные компаний изолированы по tenant ID. Подача в продакшн включается отдельным флагом; локальный режим по умолчанию останавливается на странице подтверждения.
+1. A user sends a request and attachments. The API creates a persistent trip draft, then extracts candidate fields from the source material.
+2. Missing or uncertain details return as questions. The extracted data is validated against typed schemas and business rules before it can become a portal payload.
+3. After confirmation, the document service builds a DOCX, inserts the current carrier's signature assets, converts it to PDF, and stores the generated files separately from the original attachments.
+4. A queued browser worker fills the portal and records the result. In the default safe mode it stops before the final submit action.
+5. Trip status, generated files, and browser evidence remain tied to the same trip record. Company-owned data is scoped to that company in the API.
 
-[Разбор архитектуры и решений](docs/portfolio-architecture.md) · [Локальный запуск](docs/development.md)
+The code lives in [`apps/api/`](apps/api/) (FastAPI, Celery, SQLAlchemy, Playwright) and [`apps/web/`](apps/web/) (Next.js). [`docs/portfolio-architecture.md`](docs/portfolio-architecture.md) walks through the main implementation choices.
 
-## Технологии
+## The parts that took work
 
-Python, FastAPI, SQLAlchemy, Celery, PostgreSQL, Redis, Playwright, Next.js, TypeScript, Docker Compose, OOXML, LibreOffice. LLM провайдер используется для извлечения данных из документов; его ответ проходит валидацию и не является основанием для автоматической отправки.
+**Documents with changing numbers of people and vehicles.** This was not a simple mail merge. The document builder has to rebuild DOCX tables for each trip, handle route text that spans multiple lines, insert the right carrier signature, and catch placeholders that were not filled. The implementation is in [`documents.py`](apps/api/app/automation/documents.py).
 
-## Быстрый старт
+**A stateful portal form.** The GIBDD form moves through several pages and creates additional fields for each bus and driver. The Playwright worker waits for the expected step, fills the repeated sections, uploads documents, and saves evidence when the flow stops or fails. The adapter is in [`submission.py`](apps/api/app/automation/submission.py).
+
+**Requests that do not arrive as clean data.** The extraction step reads messages and attachments, but it does not treat the model's output as a completed filing. Missing times and approximate routes go back to the user for confirmation before the payload is built. That logic is in [`workflow.py`](apps/api/app/automation/workflow.py) and [`extraction.py`](apps/api/app/automation/extraction.py).
+
+## Run it locally
 
 ```bash
 cp .env.example .env
-# Задайте свои секреты и ключ LLM в .env.
+# Set POSTGRES_PASSWORD and SECRET_KEY in .env.
+# Add a Gemini key for extraction, or use LLM_PROVIDER=mock for an offline UI check.
 docker compose up --build
 ```
 
-Интерфейс: `http://localhost:3100`. Для локальной проверки без LLM можно выставить `LLM_PROVIDER=mock` при `APP_ENV=development`. Значение `GIBDD_LIVE_SUBMISSION=false` оставляет финальное действие недоступным. Этот режим позволяет изучить поток без отправки уведомления.
+The UI is at `http://localhost:3100`. Keep `GIBDD_LIVE_SUBMISSION=false` for local exploration.
 
-## Проверка кода
+To check the code:
 
 ```bash
-# Если зависимости уже установлены:
 cd apps/api && pytest
-cd ../.. && npm test && npm run lint
-node --check legacy/gibdd_autofill_node.js
-node --check legacy/gibdd_autofill_chrome_batch.js
+cd ../.. && npm test
 ```
-
-Публичные тесты проверяют нейтральную логику и создание демонстрационного шаблона. Полный набор приёмочных тестов с рабочими сценариями остаётся в закрытом окружении.
-
-## Статус
-
-Это инженерный кейс и локально запускаемый прототип приложения. Исторические скрипты показывают путь развития системы, а не готовый автономный сервис для сторонних пользователей. Доступность внешнего портала, CAPTCHA, сетевой маршрут и финальное подтверждение зависят от среды и требуют отдельной проверки перед рабочим использованием.
-
-## Безопасность публикации
-
-Сборка создана отдельно от рабочего каталога. В репозитории нет реальных payload, PDF/DOCX заявок, квитанций, `.env`, клиентских справочников или сохранённых сессий браузера. Демонстрационный DOCX создаётся из открытого исходного кода при первом запуске. Вместо справочников по умолчанию используются пустые массивы. Перед любым будущим коммитом нужно повторять проверку файлов на персональные данные и секреты.
