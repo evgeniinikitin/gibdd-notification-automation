@@ -1,9 +1,9 @@
-# Исходная файловая автоматизация
+# The first, file-based version
 
-В этой папке только универсальные обезличенные компоненты. Реальные пакетные задания и JSON payload намеренно исключены.
+These are the modules I used before building Buscript. They show the document builder, portal adapter, and batch runner as separate steps.
 
-- `build_notification_xml.py` — генерация документа из шаблона через OOXML.
-- `gibdd_autofill_node.js` — заполнение шагов портала через Playwright.
-- `gibdd_autofill_chrome_batch.js` — последовательный запуск в существующей CDP сессии и ручное финальное подтверждение.
+- [`build_notification_xml.py`](build_notification_xml.py) assembles a DOCX by editing its OOXML parts and rebuilding repeated tables.
+- [`gibdd_autofill_node.js`](gibdd_autofill_node.js) fills the portal's multi-step form with Playwright.
+- [`gibdd_autofill_chrome_batch.js`](gibdd_autofill_chrome_batch.js) processes several payloads through an existing CDP browser session and leaves final confirmation to the operator.
 
-Для использования адаптера потребуются собственные данные, установленный `playwright` и доступный браузер. `GIBDD_CARRIER_TEMPLATES` указывает на локальный JSON с реквизитами (не коммитить). `GIBDD_APPLICANT_EMAIL` и `GIBDD_EXCLUDED_DRIVERS` задаются в окружении при необходимости. Папка сохранена как пример эволюции системы; новый backend находится в `apps/api/app/automation/`.
+The application code that replaced this file-based process is in [`apps/api/app/automation/`](../apps/api/app/automation/).
